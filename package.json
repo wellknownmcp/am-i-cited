@@ -1,11 +1,27 @@
 {
   "name": "am-i-cited",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI citation probe: measure whether Perplexity, ChatGPT and Claude cite your site when users ask about the problem you solve. BYOK, zero-dependency.",
   "license": "MIT",
   "type": "module",
-  "bin": { "am-i-cited": "./am-i-cited.mjs" },
-  "engines": { "node": ">=18" },
-  "repository": { "type": "git", "url": "https://github.com/wellknownmcp/am-i-cited.git" },
-  "keywords": ["geo", "aeo", "llm-seo", "ai-citations", "chatgpt", "claude", "perplexity", "brand-monitoring"]
+  "bin": {
+    "am-i-cited": "./am-i-cited.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wellknownmcp/am-i-cited.git"
+  },
+  "keywords": [
+    "geo",
+    "aeo",
+    "llm-seo",
+    "ai-citations",
+    "chatgpt",
+    "claude",
+    "perplexity",
+    "brand-monitoring"
+  ]
 }

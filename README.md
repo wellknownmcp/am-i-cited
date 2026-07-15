@@ -25,10 +25,10 @@ Output: a score matrix on stderr, and one CSV row per (date, prompt, engine,
 run) appended to `results/<project>.csv`:
 
 ```csv
-date,prompt_id,engine,run,score,cited_url,competitor_url,note
-2026-07-15,P02,perplexity,1,2,https://cortex-gateway.dev/guides/rest-api-to-mcp-server/,,
-2026-07-15,P06,openai,1,-1,,https://github.com/some/competitor,
-2026-07-15,P04,anthropic,1,0,,,
+date,prompt_id,engine,run,score,cited_url,cited_text,intent_match,competitor_url,queries_issued,note
+2026-07-15,P02,anthropic,1,2,https://cortex-gateway.dev/guides/rest-api-to-mcp-server/,"Expose your REST API as an MCP server...",yes,,turn REST API into MCP server | REST API MCP wrapper,
+2026-07-15,P06,openai,1,-1,,,,https://github.com/some/competitor,best open source MCP gateway self hosted,
+2026-07-15,P04,perplexity,1,0,,,,,,
 ```
 
 ## Scoring
@@ -39,6 +39,36 @@ date,prompt_id,engine,run,score,cited_url,competitor_url,note
 | `1` | Your brand is **mentioned** without a link | The model knows you (entity/corpus) but does not retrieve you. Lever: indexing and freshness. |
 | `0` | Absent | Nobody owns this intent — or you don't. A recurring `0` where *no one* is cited is the best opportunity in the file. |
 | `-1` | A **competitor** is cited and you are not | Their page beats yours (or yours doesn't exist). `competitor_url` is the brief for the page to write. |
+
+## Beyond the score: intent capture
+
+Being cited is worthless if the engine translated the user's intent into
+something you don't answer, or if your citation is a drive-by mention. Three
+columns capture this:
+
+- **`queries_issued`** — the web-search queries the engine actually ran for
+  the prompt: its *translation* of the user intent (the fan-out). If
+  "give each agent the user's own permissions" fans out into "API key
+  management", you now know *which* sub-intent you are losing — far more
+  actionable than a bare `0`.
+- **`cited_text`** — the passage associated with your citation. This tells
+  you *which* section of your page does the work (and which sections never
+  get cited).
+- **`intent_match`** — an LLM-judged verdict (`yes` / `partial` / `no`):
+  does the cited material genuinely address the user's intent? Judged only
+  when you are cited (score `2`), using your Anthropic key (one extra small
+  call). A `2/no` is a vanity citation; treat it like a `0` with better PR.
+  Give the judge a cleaner target by adding an optional `"intent"` field to
+  a prompt ("user wants per-user authorization for AI agents, not shared
+  keys") — it falls back to the prompt text otherwise.
+
+What each engine exposes:
+
+| Engine | `queries_issued` | `cited_text` |
+|---|---|---|
+| `openai` | ✅ `web_search_call.action.query` | ✅ the answer span the citation supports |
+| `anthropic` | ✅ `server_tool_use` input | ✅ the excerpt of *your page* that was cited |
+| `perplexity` | ❌ not exposed | ❌ not exposed |
 
 ## Writing a project config
 
