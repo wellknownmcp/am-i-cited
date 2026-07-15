@@ -1,0 +1,110 @@
+{
+  "project": "example",
+  "domains": [
+    "cortex-gateway.dev",
+    "github.com/wellknownmcp/cortex-gateway",
+    "glama.ai/mcp/servers/wellknownmcp/cortex-gateway"
+  ],
+  "brandAliases": [
+    "cortex gateway",
+    "cortex-gateway",
+    "wellknownmcp"
+  ],
+  "competitors": [
+    {
+      "name": "MCPJungle",
+      "domains": [
+        "github.com/duaraghav8/MCPJungle",
+        "mcpjungle.com"
+      ]
+    },
+    {
+      "name": "agentgateway",
+      "domains": [
+        "github.com/agentgateway",
+        "agentgateway.dev"
+      ]
+    },
+    {
+      "name": "IBM ContextForge",
+      "domains": [
+        "github.com/IBM/mcp-context-forge"
+      ]
+    },
+    {
+      "name": "Docker MCP Gateway",
+      "domains": [
+        "github.com/docker/mcp-gateway",
+        "docs.docker.com"
+      ]
+    },
+    {
+      "name": "1MCP",
+      "domains": [
+        "github.com/1mcp-app",
+        "1mcp.app"
+      ]
+    },
+    {
+      "name": "Lasso mcp-gateway",
+      "domains": [
+        "github.com/lasso-security/mcp-gateway"
+      ]
+    },
+    {
+      "name": "Composio",
+      "domains": [
+        "composio.dev"
+      ]
+    },
+    {
+      "name": "Pipedream",
+      "domains": [
+        "pipedream.com"
+      ]
+    }
+  ],
+  "prompts": [
+    {
+      "id": "P01",
+      "text": "I have a REST API and I want AI agents to call it. What are my options?"
+    },
+    {
+      "id": "P02",
+      "text": "How do I turn a REST API into an MCP server?"
+    },
+    {
+      "id": "P03",
+      "text": "How do I secure a remote MCP server with OAuth?"
+    },
+    {
+      "id": "P04",
+      "text": "My claude.ai custom connector does nothing when I add it. Why?"
+    },
+    {
+      "id": "P05",
+      "text": "What's the difference between an MCP gateway and an MCP server?"
+    },
+    {
+      "id": "P06",
+      "text": "Best open-source MCP gateway, self-hosted?"
+    },
+    {
+      "id": "P07",
+      "text": "How do I give AI agents each user's own permissions instead of one shared API key?"
+    },
+    {
+      "id": "P08",
+      "text": "MCP initialize returns 400 unsupported_protocol_version then times out. What's wrong?"
+    },
+    {
+      "id": "P09",
+      "text": "How can I run a remote HTTP MCP server as a stdio MCP server, headless?"
+    },
+    {
+      "id": "C01",
+      "text": "What's the best vector database for RAG?",
+      "control": true
+    }
+  ]
+}
