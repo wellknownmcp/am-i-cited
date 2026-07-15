@@ -1,4 +1,7 @@
 .env
 results/
 logs/
+data/
 node_modules/
+CLAUDE.local.md
+.claude/

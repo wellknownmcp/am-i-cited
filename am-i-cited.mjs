@@ -69,7 +69,12 @@ if (!project) { log('Usage: node am-i-cited.mjs <project> [--runs N] [--engines 
 const runs = Number.parseInt(args[args.indexOf('--runs') + 1] ?? '1', 10) || 1;
 const enginesArg = args.includes('--engines') ? args[args.indexOf('--engines') + 1].split(',') : null;
 
-const cfg = JSON.parse(readFileSync(join(HERE, 'projects', `${project}.json`), 'utf8'));
+// Directory overrides — used by the hosted backend (server/backend.mjs) to
+// isolate each user's projects and results; default to the repo layout.
+const PROJECTS_DIR = process.env.AMICITED_PROJECTS_DIR || join(HERE, 'projects');
+const RESULTS_DIR = process.env.AMICITED_RESULTS_DIR || join(HERE, 'results');
+
+const cfg = JSON.parse(readFileSync(join(PROJECTS_DIR, `${project}.json`), 'utf8'));
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 function hostnameOf(url) {
@@ -231,8 +236,8 @@ const engines = (enginesArg ?? Object.keys(ENGINES)).filter((e) => {
 if (!engines.length) { log('❌ no usable engine — fill in .env (see .env.example)'); process.exit(1); }
 
 const date = new Date().toISOString().slice(0, 10);
-mkdirSync(join(HERE, 'results'), { recursive: true });
-const csvPath = join(HERE, 'results', `${cfg.project}.csv`);
+mkdirSync(RESULTS_DIR, { recursive: true });
+const csvPath = join(RESULTS_DIR, `${cfg.project}.csv`);
 if (!existsSync(csvPath)) {
   writeFileSync(csvPath, 'date,prompt_id,engine,run,score,cited_url,cited_text,intent_match,competitor_url,queries_issued,note\n');
 }

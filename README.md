@@ -120,6 +120,21 @@ skipped, so you can start with a single key.
 Weekly is plenty: the useful signal is the month-over-month trend, and the
 negative control keeps you honest.
 
+## Hosted mode (multi-user BYOK)
+
+`server/backend.mjs` turns the probe into a multi-user service, designed to
+run behind [cortex-gateway](https://github.com/wellknownmcp/cortex-gateway)
+(OAuth 2.1, per-user identity propagation). Each user stores their own
+engine keys — encrypted per user with AES-256-GCM, write-only, masked
+status, audit trail, real deletion — and owns their project configs and
+history. The full custody design, including what it does *not* protect
+against, is public: [docs/byok.md](docs/byok.md).
+
+```bash
+AMICITED_VAULT_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
+  node server/backend.mjs   # cortex backend contract on :4930
+```
+
 ## What this is not
 
 - Not a rank tracker — LLMs don't have ranks, they have citations.
