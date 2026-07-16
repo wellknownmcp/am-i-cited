@@ -4,8 +4,9 @@
 consoles measure impressions; analytics measure referrers. Neither answers
 that question — a site can have zero clicks and be cited by ChatGPT, or the
 reverse. `am-i-cited` measures the thing itself: it asks Perplexity, ChatGPT
-(OpenAI API) and Claude (Anthropic API) the questions your users actually ask,
-and records whether **your domain shows up in the answer's citations**.
+(OpenAI API), Claude (Anthropic API) and Grok (xAI API) the questions your
+users actually ask, and records whether **your domain shows up in the
+answer's citations**.
 
 Open source (MIT), bring-your-own-keys, zero dependencies — one Node 18+
 script, a JSON config per project, a CSV of history. A full 3-run probe over
@@ -68,6 +69,7 @@ What each engine exposes:
 |---|---|---|
 | `openai` | ✅ `web_search_call.action.query` | ✅ the answer span the citation supports |
 | `anthropic` | ✅ `server_tool_use` input | ✅ the excerpt of *your page* that was cited |
+| `grok` | ❌ not exposed today (captured if xAI adds it) | ✅ the answer span the citation supports |
 | `perplexity` | ❌ not exposed | ❌ not exposed |
 
 ## Writing a project config
@@ -107,6 +109,7 @@ Copy `projects/example.json`. Rules that make the measurement honest:
 | `perplexity` | `chat/completions` | `sonar` | `citations[]` + `search_results[]` in the response |
 | `openai` | Responses API + `web_search` tool | `gpt-5-mini` | `url_citation` annotations on output text |
 | `anthropic` | Messages API + `web_search` tool | `claude-opus-4-8` | `citations[]` on text blocks (tool results are retrieved, not cited) |
+| `grok` | xAI Responses API + `web_search` tool | `grok-4.5` | `url_citation` annotations on output text |
 
 Override models via `*_PROBE_MODEL` env vars. Engines whose key is absent are
 skipped, so you can start with a single key.

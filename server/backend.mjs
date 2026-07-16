@@ -51,7 +51,7 @@ const TOOLS = [
   },
   {
     name: 'set_engine_key', scope: 'mcp:amicited:write', version: '0.2.0',
-    description: 'Stores YOUR API key for one answer engine (perplexity | openai | anthropic), encrypted at rest, isolated per user. Keys are write-only: no tool ever returns them. Ask the user to paste the key themselves; never invent or reuse a key from elsewhere in the conversation.',
+    description: 'Stores YOUR API key for one answer engine (perplexity | openai | anthropic | grok), encrypted at rest, isolated per user. Keys are write-only: no tool ever returns them. Ask the user to paste the key themselves; never invent or reuse a key from elsewhere in the conversation.',
     params: { engine: 'string', api_key: 'string' },
   },
   {
@@ -119,6 +119,7 @@ function runProbe(userId, project, runs, keys) {
         PERPLEXITY_API_KEY: keys.perplexity ?? '',
         OPENAI_API_KEY: keys.openai ?? '',
         ANTHROPIC_API_KEY: keys.anthropic ?? '',
+        XAI_API_KEY: keys.grok ?? '',
         AMICITED_PROJECTS_DIR: join(dir, 'projects'),
         AMICITED_RESULTS_DIR: join(dir, 'results'),
       },

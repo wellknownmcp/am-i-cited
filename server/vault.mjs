@@ -16,7 +16,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-const ENGINES = ['perplexity', 'openai', 'anthropic'];
+const ENGINES = ['perplexity', 'openai', 'anthropic', 'grok'];
 
 function masterKey() {
   const hex = process.env.AMICITED_VAULT_KEY;

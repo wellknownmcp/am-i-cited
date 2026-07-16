@@ -2,10 +2,10 @@
 /**
  * am-i-cited — AI citation probe.
  *
- * Measures whether AI answer engines (Perplexity, ChatGPT via the OpenAI API,
- * Claude via the Anthropic API) CITE your domains when a user asks about the
- * problem your product solves. Multi-project, bring-your-own-keys,
- * zero-dependency (Node 18+, global fetch).
+ * Measures whether AI answer engines (Perplexity, ChatGPT via the OpenAI
+ * API, Claude via the Anthropic API, Grok via the xAI API) CITE your domains
+ * when a user asks about the problem your product solves. Multi-project,
+ * bring-your-own-keys, zero-dependency (Node 18+, global fetch).
  *
  * Usage:
  *   node am-i-cited.mjs <project> [--runs N] [--engines perplexity,openai,anthropic]
@@ -15,9 +15,9 @@
  *     prompts[{id,text,control?}] }
  *
  * Keys: .env next to this script (PERPLEXITY_API_KEY, OPENAI_API_KEY,
- * ANTHROPIC_API_KEY; optional model overrides PERPLEXITY_PROBE_MODEL,
- * OPENAI_PROBE_MODEL, ANTHROPIC_PROBE_MODEL). An engine without a key is
- * skipped, not fatal.
+ * ANTHROPIC_API_KEY, XAI_API_KEY; optional model overrides
+ * PERPLEXITY_PROBE_MODEL, OPENAI_PROBE_MODEL, ANTHROPIC_PROBE_MODEL,
+ * GROK_PROBE_MODEL). An engine without a key is skipped, not fatal.
  *
  * Output: appends to results/<project>.csv
  *   date,prompt_id,engine,run,score,cited_url,cited_text,intent_match,
@@ -151,6 +151,29 @@ async function post(url, headers, body) {
   return JSON.parse(text);
 }
 
+// Shared parser for Responses-API-shaped payloads (OpenAI and xAI): message
+// items carry output_text content with url_citation annotations; when the
+// provider exposes web_search_call items, their queries are the fan-out.
+function parseResponsesOutput(j) {
+  let text = ''; const citedUrls = []; const queries = []; const citedSpans = [];
+  for (const item of j.output ?? []) {
+    if (item.type === 'web_search_call' && item.action?.query) queries.push(item.action.query);
+    if (item.type !== 'message') continue;
+    for (const c of item.content ?? []) {
+      if (c.type !== 'output_text') continue;
+      text += c.text ?? '';
+      for (const a of c.annotations ?? []) {
+        if (a.type !== 'url_citation' || !a.url) continue;
+        citedUrls.push(a.url);
+        if (Number.isInteger(a.start_index) && Number.isInteger(a.end_index)) {
+          citedSpans.push({ url: a.url, text: (c.text ?? '').slice(a.start_index, a.end_index) });
+        }
+      }
+    }
+  }
+  return { text, citedUrls, queries, citedSpans };
+}
+
 // ─── engines ───────────────────────────────────────────────────────────────
 const ENGINES = {
   // Perplexity Sonar — citations are native in the response
@@ -176,24 +199,19 @@ const ENGINES = {
       const j = await post('https://api.openai.com/v1/responses',
         { authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
         { model: process.env.OPENAI_PROBE_MODEL || 'gpt-5-mini', tools: [{ type: 'web_search' }], input: prompt });
-      let text = ''; const citedUrls = []; const queries = []; const citedSpans = [];
-      for (const item of j.output ?? []) {
-        if (item.type === 'web_search_call' && item.action?.query) queries.push(item.action.query);
-        if (item.type !== 'message') continue;
-        for (const c of item.content ?? []) {
-          if (c.type !== 'output_text') continue;
-          text += c.text ?? '';
-          for (const a of c.annotations ?? []) {
-            if (a.type !== 'url_citation' || !a.url) continue;
-            citedUrls.push(a.url);
-            // the answer span this citation supports (start/end index into c.text)
-            if (Number.isInteger(a.start_index) && Number.isInteger(a.end_index)) {
-              citedSpans.push({ url: a.url, text: (c.text ?? '').slice(a.start_index, a.end_index) });
-            }
-          }
-        }
-      }
-      return { text, citedUrls, queries, citedSpans };
+      return parseResponsesOutput(j);
+    },
+  },
+  // xAI Responses API + web_search — same wire shape as OpenAI's Responses
+  // API (url_citation annotations); issued queries are not exposed (captured
+  // anyway if xAI starts emitting web_search_call items)
+  grok: {
+    key: 'XAI_API_KEY',
+    async ask(prompt) {
+      const j = await post('https://api.x.ai/v1/responses',
+        { authorization: `Bearer ${process.env.XAI_API_KEY}` },
+        { model: process.env.GROK_PROBE_MODEL || 'grok-4.5', tools: [{ type: 'web_search' }], input: [{ role: 'user', content: prompt }] });
+      return parseResponsesOutput(j);
     },
   },
   // Anthropic Messages + web_search — citations attached to text blocks
