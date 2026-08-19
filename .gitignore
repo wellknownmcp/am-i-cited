@@ -1,4 +1,6 @@
 .env
+projects/*
+!projects/example.json
 results/
 logs/
 data/
