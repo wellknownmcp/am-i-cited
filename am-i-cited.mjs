@@ -9,10 +9,18 @@
  *
  * Usage:
  *   node am-i-cited.mjs <project> [--runs N] [--engines perplexity,openai,anthropic]
+ *                       [--prompts P06,P08]
  *
  * Project config: projects/<project>.json
  *   { project, domains[], brandAliases[], competitors[{name,domains[]}],
- *     prompts[{id,text,control?}] }
+ *     prompts[{id,text,control?,expect_citations?}] }
+ *   control: negative control — scoring anything but 0 flags probe bias.
+ *   expect_citations: positive control (canary) — a prompt whose answer MUST
+ *   carry citations on any healthy engine. Zero citations on a canary means
+ *   the engine's citation capture is broken (API drift, parser bug), so the
+ *   0s elsewhere are blindness, not absence. Without a canary the two are
+ *   indistinguishable — this probe wrote 26 plausible zeros on 2026-08-19
+ *   while a web_search variant change had silently removed all citations.
  *
  * Keys: .env next to this script (PERPLEXITY_API_KEY, OPENAI_API_KEY,
  * ANTHROPIC_API_KEY, XAI_API_KEY; optional model overrides
@@ -21,10 +29,21 @@
  *
  * Output: appends to results/<project>.csv
  *   date,prompt_id,engine,run,score,cited_url,cited_text,intent_match,
- *   competitor_url,queries_issued,note
+ *   competitor_url,queries_issued,note,our_url_retrieved
  * Scoring: 2 cited (your domain appears in the answer's citations) |
  *          1 mentioned without a link | 0 absent |
  *          -1 a competitor is cited and you are not.
+ *
+ * our_url_retrieved separates the two causes of a bad score:
+ *   'no'  — your domain never appeared in the engine's search results: a
+ *           FINDABILITY problem (indexation freshness, crawl trust). Fix with
+ *           time, internal links, sitemaps — not by rewriting the page.
+ *   'yes' — retrieved but not cited: a PREFERENCE problem — the engine saw
+ *           your page and chose another passage. Fix the format (a "best X"
+ *           intent wants a comparison, not a product page), the passage, the
+ *           freshness date.
+ *   ''    — the engine does not expose its retrieved set (OpenAI/xAI
+ *           Responses API); unknown, do not infer either way.
  *
  * Beyond the score, the probe captures HOW the engine handled the intent:
  * - queries_issued: the web-search queries the engine actually ran for the
@@ -68,6 +87,7 @@ const project = args.find((a) => !a.startsWith('--'));
 if (!project) { log('Usage: node am-i-cited.mjs <project> [--runs N] [--engines a,b,c]'); process.exit(1); }
 const runs = Number.parseInt(args[args.indexOf('--runs') + 1] ?? '1', 10) || 1;
 const enginesArg = args.includes('--engines') ? args[args.indexOf('--engines') + 1].split(',') : null;
+const promptsArg = args.includes('--prompts') ? args[args.indexOf('--prompts') + 1].split(',') : null;
 
 // Directory overrides — used by the hosted backend (server/backend.mjs) to
 // isolate each user's projects and results; default to the repo layout.
@@ -75,6 +95,12 @@ const PROJECTS_DIR = process.env.AMICITED_PROJECTS_DIR || join(HERE, 'projects')
 const RESULTS_DIR = process.env.AMICITED_RESULTS_DIR || join(HERE, 'results');
 
 const cfg = JSON.parse(readFileSync(join(PROJECTS_DIR, `${project}.json`), 'utf8'));
+if (promptsArg) {
+  const known = new Set(cfg.prompts.map((p) => p.id));
+  for (const id of promptsArg) if (!known.has(id)) log(`⚠️ --prompts: unknown id ${id}`);
+  cfg.prompts = cfg.prompts.filter((p) => promptsArg.includes(p.id));
+  if (!cfg.prompts.length) { log('❌ --prompts matched nothing'); process.exit(1); }
+}
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 function hostnameOf(url) {
@@ -139,16 +165,31 @@ Question: does the cited material genuinely address the user's intent, or is it 
     return ['yes', 'partial', 'no'].find((v) => verdict.startsWith(v)) ?? '';
   } catch { return ''; }
 }
-async function post(url, headers, body) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(180_000),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
-  return JSON.parse(text);
+async function post(url, headers, body, attempt = 1) {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(180_000),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+      err.transient = res.status === 429 || res.status >= 500;
+      throw err;
+    }
+    return JSON.parse(text);
+  } catch (err) {
+    // One retry on transient failures only (timeout, 429, 5xx) — a 401/400
+    // will not heal itself and retrying it just doubles the noise.
+    const transient = err.transient || err.name === 'TimeoutError' || err.name === 'AbortError';
+    if (transient && attempt === 1) {
+      await new Promise((r) => setTimeout(r, 5_000));
+      return post(url, headers, body, 2);
+    }
+    throw err;
+  }
 }
 
 // Shared parser for Responses-API-shaped payloads (OpenAI and xAI): message
@@ -171,7 +212,9 @@ function parseResponsesOutput(j) {
       }
     }
   }
-  return { text, citedUrls, queries, citedSpans };
+  // The Responses API does not expose the retrieved result set — only the
+  // issued queries. our_url_retrieved stays '' (unknown) on these engines.
+  return { text, citedUrls, queries, citedSpans, retrievedUrls: [] };
 }
 
 // ─── engines ───────────────────────────────────────────────────────────────
@@ -188,8 +231,11 @@ const ENGINES = {
         ...(j.citations ?? []),
         ...((j.search_results ?? []).map((r) => r.url)),
       ].filter(Boolean);
-      // Perplexity exposes neither the issued queries nor cited passages
-      return { text, citedUrls, queries: [], citedSpans: [] };
+      // Perplexity exposes neither the issued queries nor cited passages.
+      // search_results doubles as the retrieved set (kept in citedUrls too,
+      // unchanged, so scores stay comparable with pre-column baselines).
+      const retrievedUrls = (j.search_results ?? []).map((r) => r.url).filter(Boolean);
+      return { text, citedUrls, queries: [], citedSpans: [], retrievedUrls };
     },
   },
   // OpenAI Responses API + web_search — url_citation annotations
@@ -223,15 +269,24 @@ const ENGINES = {
         {
           model: process.env.ANTHROPIC_PROBE_MODEL || 'claude-opus-4-8',
           max_tokens: 2048,
-          tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 5 }],
+          // web_search_20260209 (dynamic filtering) attaches NO citations to
+          // text blocks — the probe would be blind to scores 2 and -1. The
+          // 20250305 variant keeps per-text-block `citations` with URLs.
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
           messages: [{ role: 'user', content: prompt }],
         });
-      let text = ''; const citedUrls = []; const queries = []; const citedSpans = [];
+      let text = ''; const citedUrls = []; const queries = []; const citedSpans = []; const retrievedUrls = [];
       for (const block of j.content ?? []) {
         if (block.type === 'server_tool_use' && block.name === 'web_search' && block.input?.query) {
           queries.push(block.input.query);
         }
-        if (block.type !== 'text') continue; // web_search_tool_result = retrieved, not cited
+        // web_search_tool_result = retrieved, not cited — but the retrieved
+        // set is exactly what separates "not findable" from "not preferred",
+        // so capture it. On error, content is an object, not a list.
+        if (block.type === 'web_search_tool_result' && Array.isArray(block.content)) {
+          for (const r of block.content) if (r.url) retrievedUrls.push(r.url);
+        }
+        if (block.type !== 'text') continue;
         text += block.text ?? '';
         for (const c of block.citations ?? []) {
           if (!c.url) continue;
@@ -240,7 +295,7 @@ const ENGINES = {
           if (c.cited_text) citedSpans.push({ url: c.url, text: c.cited_text });
         }
       }
-      return { text, citedUrls, queries, citedSpans };
+      return { text, citedUrls, queries, citedSpans, retrievedUrls };
     },
   },
 };
@@ -248,7 +303,15 @@ const ENGINES = {
 // ─── run ───────────────────────────────────────────────────────────────────
 const engines = (enginesArg ?? Object.keys(ENGINES)).filter((e) => {
   if (!ENGINES[e]) { log(`⚠️ unknown engine: ${e}`); return false; }
-  if (!process.env[ENGINES[e].key]) { log(`⚠️ ${e} skipped (${ENGINES[e].key} not set)`); return false; }
+  const val = process.env[ENGINES[e].key];
+  if (!val) { log(`⚠️ ${e} skipped (${ENGINES[e].key} not set)`); return false; }
+  // A real API key never contains whitespace or starts with '#'. Values like
+  // "   # OpenAI key goes here" are placeholders copied from a template .env —
+  // sending them buys a cryptic 401 per prompt instead of one clear message.
+  if (/^#/.test(val) || /\s/.test(val)) {
+    log(`⚠️ ${e} skipped (${ENGINES[e].key} looks like a placeholder, not a key)`);
+    return false;
+  }
   return true;
 });
 if (!engines.length) { log('❌ no usable engine — fill in .env (see .env.example)'); process.exit(1); }
@@ -256,43 +319,76 @@ if (!engines.length) { log('❌ no usable engine — fill in .env (see .env.exam
 const date = new Date().toISOString().slice(0, 10);
 mkdirSync(RESULTS_DIR, { recursive: true });
 const csvPath = join(RESULTS_DIR, `${cfg.project}.csv`);
+const CSV_HEADER = 'date,prompt_id,engine,run,score,cited_url,cited_text,intent_match,competitor_url,queries_issued,note,our_url_retrieved';
 if (!existsSync(csvPath)) {
-  writeFileSync(csvPath, 'date,prompt_id,engine,run,score,cited_url,cited_text,intent_match,competitor_url,queries_issued,note\n');
+  writeFileSync(csvPath, CSV_HEADER + '\n');
+} else {
+  // Migration: our_url_retrieved was appended (last, on purpose) after the
+  // 2026-08-19 baseline. Rewrite only the header line — old data rows keep
+  // one fewer field, which CSV readers surface as an absent value. Touching
+  // the data rows themselves is unsafe: quoted fields may span lines.
+  const lines = readFileSync(csvPath, 'utf8').split('\n');
+  if (lines[0] && !lines[0].includes('our_url_retrieved')) {
+    lines[0] = CSV_HEADER;
+    writeFileSync(csvPath, lines.join('\n'));
+  }
 }
 const csv = (v) => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
 const MARK = { yes: '✓', partial: '~', no: '✗' };
 
 const matrix = {};
+// Canary accounting: per engine, did ANY response carry citations? An engine
+// whose every answer has zero citations is a broken capture (API drift,
+// parser bug), and its 0s must not be read as "absent".
+const engineSawCitations = Object.fromEntries(engines.map((e) => [e, false]));
+const engineAnswered = Object.fromEntries(engines.map((e) => [e, false]));
 for (let run = 1; run <= runs; run++) {
   for (const p of cfg.prompts) {
     for (const engine of engines) {
       let row;
       try {
         const answer = await ENGINES[engine].ask(p.text);
+        engineAnswered[engine] = true;
+        if (answer.citedUrls.length) engineSawCitations[engine] = true;
         const s = score(answer, cfg);
         // intent_match: only meaningful when we are cited; judged against the
         // config's `intent` field when present, else the prompt itself
         const intent_match = s.score === 2
           ? await judgeIntentMatch(p.intent ?? p.text, s.cited_text, answer.text)
           : '';
-        const note = p.control && s.score !== 0 ? 'NEGATIVE CONTROL SCORED — probe may be biased' : '';
+        const notes = [];
+        if (p.control && s.score !== 0) notes.push('NEGATIVE CONTROL SCORED — probe may be biased');
+        if (p.expect_citations && !answer.citedUrls.length) notes.push('CANARY FAILED — zero citations on a prompt that must cite; engine capture may be blind');
+        // Findability vs preference: was OUR domain in the retrieved set,
+        // independently of citation? '' = engine does not expose it.
+        const our_url_retrieved = (answer.retrievedUrls ?? []).length
+          ? ((answer.retrievedUrls ?? []).some((u) => matchDomain(u, cfg.domains)) ? 'yes' : 'no')
+          : '';
         row = {
           score: s.score, cited_url: s.cited_url, cited_text: s.cited_text, intent_match,
-          competitor_url: s.competitor_url, queries_issued: answer.queries.join(' | ').slice(0, 300), note,
+          competitor_url: s.competitor_url, queries_issued: answer.queries.join(' | ').slice(0, 300),
+          note: notes.join(' ; '), our_url_retrieved,
         };
       } catch (err) {
-        row = { score: '', cited_url: '', cited_text: '', intent_match: '', competitor_url: '', queries_issued: '', note: `ERROR: ${err.message.slice(0, 120)}` };
+        row = { score: '', cited_url: '', cited_text: '', intent_match: '', competitor_url: '', queries_issued: '', note: `ERROR: ${err.message.slice(0, 120)}`, our_url_retrieved: '' };
       }
-      appendFileSync(csvPath, [date, p.id, engine, run, row.score, row.cited_url, row.cited_text, row.intent_match, row.competitor_url, row.queries_issued, row.note].map(csv).join(',') + '\n');
-      const cell = row.score === '' ? 'ERR' : `${row.score}${MARK[row.intent_match] ?? ''}`;
+      appendFileSync(csvPath, [date, p.id, engine, run, row.score, row.cited_url, row.cited_text, row.intent_match, row.competitor_url, row.queries_issued, row.note, row.our_url_retrieved].map(csv).join(',') + '\n');
+      const cell = row.score === '' ? 'ERR'
+        : row.note.includes('CANARY FAILED') ? 'BLIND'
+        : `${row.score}${MARK[row.intent_match] ?? ''}`;
       (matrix[p.id] ??= {})[engine + (runs > 1 ? `#${run}` : '')] = cell;
-      log(`  ${p.id} × ${engine} (run ${run}) → ${cell}${row.cited_url ? ' ✓ ' + row.cited_url : ''}${row.competitor_url ? ' ⚔ ' + row.competitor_url : ''}${row.queries_issued ? `\n      fan-out: ${row.queries_issued}` : ''}`);
+      log(`  ${p.id} × ${engine} (run ${run}) → ${cell}${row.cited_url ? ' ✓ ' + row.cited_url : ''}${row.competitor_url ? ' ⚔ ' + row.competitor_url : ''}${row.our_url_retrieved ? ` [retrieved: ${row.our_url_retrieved}]` : ''}${row.queries_issued ? `\n      fan-out: ${row.queries_issued}` : ''}`);
       await new Promise((r) => setTimeout(r, 1500));
     }
   }
 }
 
 // ─── summary ───────────────────────────────────────────────────────────────
+for (const e of engines) {
+  if (engineAnswered[e] && !engineSawCitations[e]) {
+    log(`\n🚨 ${e}: ZERO citations across the entire run. Its scores are BLINDNESS, not absence — check the engine's API contract (tool version, response shape) before trusting any 0 from it.`);
+  }
+}
 log(`\n=== am-i-cited: ${cfg.project} — ${date} (2 cited · 1 mentioned · 0 absent · -1 competitor · ✓/~/✗ intent match) ===`);
 const cols = [...new Set(Object.values(matrix).flatMap((r) => Object.keys(r)))];
 log(['prompt'.padEnd(8), ...cols.map((c) => c.padEnd(14))].join(''));
