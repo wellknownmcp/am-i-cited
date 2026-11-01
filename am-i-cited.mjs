@@ -3,7 +3,8 @@
  * am-i-cited — AI citation probe.
  *
  * Measures whether AI answer engines (Perplexity, ChatGPT via the OpenAI
- * API, Claude via the Anthropic API, Grok via the xAI API) CITE your domains
+ * API, Claude via the Anthropic API, Grok via the xAI API, Muse via the Meta
+ * Model API) CITE your domains
  * when a user asks about the problem your product solves. Multi-project,
  * bring-your-own-keys, zero-dependency (Node 18+, global fetch).
  *
@@ -23,9 +24,10 @@
  *   while a web_search variant change had silently removed all citations.
  *
  * Keys: .env next to this script (PERPLEXITY_API_KEY, OPENAI_API_KEY,
- * ANTHROPIC_API_KEY, XAI_API_KEY; optional model overrides
+ * ANTHROPIC_API_KEY, XAI_API_KEY, MUSE_API_KEY; optional model overrides
  * PERPLEXITY_PROBE_MODEL, OPENAI_PROBE_MODEL, ANTHROPIC_PROBE_MODEL,
- * GROK_PROBE_MODEL). An engine without a key is skipped, not fatal.
+ * GROK_PROBE_MODEL, MUSE_PROBE_MODEL). An engine without a key is skipped,
+ * not fatal.
  *
  * Output: appends to results/<project>.csv
  *   date,prompt_id,engine,run,score,cited_url,cited_text,intent_match,
@@ -43,7 +45,8 @@
  *           intent wants a comparison, not a product page), the passage, the
  *           freshness date.
  *   ''    — the engine does not expose its retrieved set (OpenAI/xAI
- *           Responses API); unknown, do not infer either way.
+ *           Responses API), or returned none for that answer; unknown, do
+ *           not infer either way.
  *
  * Beyond the score, the probe captures HOW the engine handled the intent:
  * - queries_issued: the web-search queries the engine actually ran for the
@@ -144,8 +147,10 @@ async function judgeIntentMatch(intent, citedText, answerText) {
     const j = await post('https://api.anthropic.com/v1/messages',
       { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
       {
-        model: process.env.ANTHROPIC_PROBE_MODEL || 'claude-opus-4-8',
-        max_tokens: 512,
+        model: process.env.ANTHROPIC_PROBE_MODEL || 'claude-opus-5-5',
+        // Room for thinking, which can't be disabled on this model: a capped
+        // response would silently lose the verdict.
+        max_tokens: 2048,
         messages: [{
           role: 'user',
           content: `You are auditing an AI answer engine for citation quality.
@@ -196,9 +201,12 @@ async function post(url, headers, body, attempt = 1) {
 // items carry output_text content with url_citation annotations; when the
 // provider exposes web_search_call items, their queries are the fan-out.
 function parseResponsesOutput(j) {
-  let text = ''; const citedUrls = []; const queries = []; const citedSpans = [];
+  let text = ''; const citedUrls = []; const queries = []; const citedSpans = []; const retrievedUrls = [];
   for (const item of j.output ?? []) {
     if (item.type === 'web_search_call' && item.action?.query) queries.push(item.action.query);
+    if (item.type === 'web_search_call' && Array.isArray(item.results)) {
+      for (const r of item.results) if (r.url) retrievedUrls.push(r.url);
+    }
     if (item.type !== 'message') continue;
     for (const c of item.content ?? []) {
       if (c.type !== 'output_text') continue;
@@ -212,9 +220,9 @@ function parseResponsesOutput(j) {
       }
     }
   }
-  // The Responses API does not expose the retrieved result set — only the
-  // issued queries. our_url_retrieved stays '' (unknown) on these engines.
-  return { text, citedUrls, queries, citedSpans, retrievedUrls: [] };
+  // Only Muse is asked for its retrieved set (web_search_call.results).
+  // OpenAI and xAI don't send one here: our_url_retrieved stays '' (unknown).
+  return { text, citedUrls, queries, citedSpans, retrievedUrls };
 }
 
 // ─── engines ───────────────────────────────────────────────────────────────
@@ -244,7 +252,7 @@ const ENGINES = {
     async ask(prompt) {
       const j = await post('https://api.openai.com/v1/responses',
         { authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-        { model: process.env.OPENAI_PROBE_MODEL || 'gpt-5-mini', tools: [{ type: 'web_search' }], input: prompt });
+        { model: process.env.OPENAI_PROBE_MODEL || 'gpt-6-astra', tools: [{ type: 'web_search' }], input: prompt });
       return parseResponsesOutput(j);
     },
   },
@@ -256,7 +264,18 @@ const ENGINES = {
     async ask(prompt) {
       const j = await post('https://api.x.ai/v1/responses',
         { authorization: `Bearer ${process.env.XAI_API_KEY}` },
-        { model: process.env.GROK_PROBE_MODEL || 'grok-4.5', tools: [{ type: 'web_search' }], input: [{ role: 'user', content: prompt }] });
+        { model: process.env.GROK_PROBE_MODEL || 'grok-4.7', tools: [{ type: 'web_search' }], input: [{ role: 'user', content: prompt }] });
+      return parseResponsesOutput(j);
+    },
+  },
+  // Meta Model API (Responses API) + web_search — url_citation annotations,
+  // plus the retrieved set on request
+  muse: {
+    key: 'MUSE_API_KEY',
+    async ask(prompt) {
+      const j = await post('https://api.meta.ai/v1/responses',
+        { authorization: `Bearer ${process.env.MUSE_API_KEY}` },
+        { model: process.env.MUSE_PROBE_MODEL || 'muse-spark-1.3', tools: [{ type: 'web_search' }], include: ['web_search_call.results'], input: prompt });
       return parseResponsesOutput(j);
     },
   },
@@ -267,8 +286,10 @@ const ENGINES = {
       const j = await post('https://api.anthropic.com/v1/messages',
         { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
         {
-          model: process.env.ANTHROPIC_PROBE_MODEL || 'claude-opus-4-8',
-          max_tokens: 2048,
+          model: process.env.ANTHROPIC_PROBE_MODEL || 'claude-opus-5-5',
+          // Thinking shares this cap: a truncated answer loses its citations
+          // and would score a false 0.
+          max_tokens: 8192,
           // web_search_20260209 (dynamic filtering) attaches NO citations to
           // text blocks — the probe would be blind to scores 2 and -1. The
           // 20250305 variant keeps per-text-block `citations` with URLs.
